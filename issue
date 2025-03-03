@@ -1,0 +1,42 @@
+1. Increase the Timeout Duration
+Try increasing the timeout beyond 30 seconds to accommodate larger files.
+
+
+SyncPoller<BlobCopyInfo, Void> blobCopyInfoVoidSyncPoller = 
+    destBlobClient.beginCopy(srcbBlobClient.getBlobUrl(), null);
+
+blobCopyInfoVoidSyncPoller.waitForCompletion(Duration.ofMinutes(5));
+2. Use pollUntilDone() Instead of waitForCompletion()
+The waitForCompletion() method times out if the operation takes longer than expected. Instead, use:
+
+
+blobCopyInfoVoidSyncPoller.pollUntilDone(Duration.ofSeconds(10)); // Polls every 10 sec
+This keeps polling until completion without timing out.
+===============================================================================================================
+3. Handle Long Running Operations Gracefully
+Instead of blocking execution, check the status in a loop:
+
+
+SyncPoller<BlobCopyInfo, Void> blobCopyInfoVoidSyncPoller = 
+    destBlobClient.beginCopy(srcbBlobClient.getBlobUrl(), null);
+
+while (true) {
+    PollResponse<BlobCopyInfo> pollResponse = blobCopyInfoVoidSyncPoller.poll();
+    String copyStatus = pollResponse.getValue().getCopyStatus().toString();
+
+    aquaLogger.info("Copy Status: " + copyStatus);
+
+    if (copyStatus.equals("SUCCESS") || copyStatus.equals("FAILED")) {
+        break; // Exit loop if copy is done or failed
+    }
+
+    Thread.sleep(5000); // Sleep for 5 seconds before polling again
+}
+===============================================================================================================
+
+4. Use CopyFromUrl for Synchronous Copy
+If both source and destination are in the same storage account, copyFromUrl() might be a better choice:
+
+
+destBlobClient.copyFromUrl(srcbBlobClient.getBlobUrl());
+This method is synchronous and completes instantly if the files are within the same region.
