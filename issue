@@ -40,3 +40,37 @@ If both source and destination are in the same storage account, copyFromUrl() mi
 
 destBlobClient.copyFromUrl(srcbBlobClient.getBlobUrl());
 This method is synchronous and completes instantly if the files are within the same region.
+
+
+===========================================
+SyncPoller<BlobCopyInfo, Void> blobCopyInfoSyncPoller = 
+    destBlobClient.beginCopy(srcbBlobClient.getBlobUrl(), null);
+
+int maxRetries = 60;  // Number of retries
+int waitInterval = 5000; // Wait time between polls in milliseconds (5 sec)
+int attempt = 0;
+
+while (attempt < maxRetries) {
+    PollResponse<BlobCopyInfo> pollResponse = blobCopyInfoSyncPoller.poll();
+    String copyStatus = pollResponse.getValue().getCopyStatus().toString();
+
+    aquaLogger.info("Copy attempt {0}: Status = {1}", attempt, copyStatus);
+
+    if ("SUCCESS".equals(copyStatus)) {
+        aquaLogger.info("Blob copy completed successfully.");
+        break;
+    } else if ("FAILED".equals(copyStatus)) {
+        aquaLogger.error("Blob copy failed.");
+        throw new RuntimeException("Blob copy operation failed.");
+    }
+
+    attempt++;
+    Thread.sleep(waitInterval);
+}
+
+// If max retries are reached, throw a timeout exception
+if (attempt >= maxRetries) {
+    aquaLogger.error("Blob copy operation timed out after {0} attempts.", maxRetries);
+    throw new TimeoutException("Blob copy operation did not complete in time.");
+}
+
