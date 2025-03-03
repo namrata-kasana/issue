@@ -74,3 +74,126 @@ if (attempt >= maxRetries) {
     throw new TimeoutException("Blob copy operation did not complete in time.");
 }
 
+========================================
+
+import com.azure.storage.blob.*;
+import com.azure.storage.blob.models.*;
+import com.azure.core.util.polling.*;
+
+import java.io.*;
+import java.nio.file.*;
+import java.util.*;
+import java.util.stream.*;
+import java.util.concurrent.*;
+
+public class AzureBlobCopyWithChunkUpload {
+    private static final int BLOCK_SIZE = 100 * 1024 * 1024; // 100MB per block
+    private static final int MAX_RETRIES = 60;
+    private static final int WAIT_INTERVAL = 5000; // 5 seconds
+
+    public static void main(String[] args) throws Exception {
+        String connectionString = "<Your_Connection_String>";
+        String containerName = "<Your_Container>";
+        String srcFilePath = "<Your_Source_File>";
+        String destinationFilePath = "<Your_Destination_File>";
+
+        BlobServiceClient serviceClient = new BlobServiceClientBuilder()
+                .connectionString(connectionString).buildClient();
+        BlobContainerClient blobContainerClient = serviceClient.getBlobContainerClient(containerName);
+        BlobClient srcBlobClient = blobContainerClient.getBlobClient(srcFilePath);
+        BlobClient destBlobClient = blobContainerClient.getBlobClient(destinationFilePath);
+
+        // Attempt Direct Copy
+        if (!attemptDirectCopy(srcBlobClient, destBlobClient)) {
+            // If direct copy fails, switch to chunked upload
+            uploadInChunks(srcBlobClient, destBlobClient, BLOCK_SIZE);
+        }
+    }
+
+    /**
+     * Attempts to copy the file directly using beginCopy and waits for completion.
+     * Returns true if successful, false if a failure occurs.
+     */
+    private static boolean attemptDirectCopy(BlobClient srcBlobClient, BlobClient destBlobClient) throws InterruptedException {
+        SyncPoller<BlobCopyInfo, Void> blobCopyInfoSyncPoller =
+                destBlobClient.beginCopy(srcBlobClient.getBlobUrl(), null);
+
+        int attempt = 0;
+        while (attempt < MAX_RETRIES) {
+            PollResponse<BlobCopyInfo> pollResponse = blobCopyInfoSyncPoller.poll();
+            String copyStatus = pollResponse.getValue().getCopyStatus().toString();
+
+            System.out.println("Copy attempt " + attempt + ": Status = " + copyStatus);
+
+            if ("SUCCESS".equals(copyStatus)) {
+                System.out.println("Blob copy completed successfully.");
+                return true;
+            } else if ("FAILED".equals(copyStatus)) {
+                System.err.println("Blob copy failed. Switching to chunked upload.");
+                return false;
+            }
+
+            attempt++;
+            Thread.sleep(WAIT_INTERVAL);
+        }
+
+        System.err.println("Blob copy operation timed out after " + MAX_RETRIES + " attempts.");
+        return false;
+    }
+
+    /**
+     * Uploads the file in chunks using Block Blobs if direct copy fails.
+     */
+    private static void uploadInChunks(BlobClient srcBlobClient, BlobClient destBlobClient, int blockSize) throws IOException {
+        Path tempFilePath = Paths.get("downloaded_temp_file.dat");
+
+        // Download the source file
+        System.out.println("Downloading source file for chunked upload...");
+        srcBlobClient.downloadToFile(tempFilePath.toString(), true);
+
+        long fileSize = Files.size(tempFilePath);
+        int numBlocks = (int) Math.ceil((double) fileSize / blockSize);
+        List<String> committedBlocks = new ArrayList<>();
+        BlobClient blockBlobClient = destBlobClient.getBlockBlobClient();
+
+        System.out.println("Uploading in chunks...");
+
+        try (InputStream fileStream = Files.newInputStream(tempFilePath);
+             ExecutorService executor = Executors.newFixedThreadPool(5)) {
+
+            List<Future<Void>> tasks = new ArrayList<>();
+            for (int i = 0; i < numBlocks; i++) {
+                final int blockId = i;
+                byte[] buffer = new byte[blockSize];
+                int bytesRead = fileStream.read(buffer);
+
+                if (bytesRead > 0) {
+                    String blockIdStr = String.format("%06d", blockId);
+                    committedBlocks.add(blockIdStr);
+
+                    tasks.add(executor.submit(() -> {
+                        blockBlobClient.getBlockBlobClient().stageBlock(blockIdStr, new ByteArrayInputStream(buffer), bytesRead);
+                        System.out.println("Uploaded block: " + blockIdStr);
+                        return null;
+                    }));
+                }
+            }
+
+            // Wait for all uploads to complete
+            for (Future<Void> task : tasks) {
+                task.get();
+            }
+
+            // Commit blocks after all are uploaded
+            blockBlobClient.getBlockBlobClient().commitBlockList(committedBlocks);
+            System.out.println("Chunked upload completed successfully.");
+        } catch (Exception e) {
+            System.err.println("Error during chunked upload: " + e.getMessage());
+        } finally {
+            // Clean up temporary file
+            Files.deleteIfExists(tempFilePath);
+        }
+    }
+}
+
+
